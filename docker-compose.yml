@@ -1,20 +1,19 @@
 name: devops-demo
 
-# ── Shared network ────────────────────────────────────────────────────────────
+#  Shared network 
 networks:
   app-network:
     driver: bridge
 
-# ── Named volumes ─────────────────────────────────────────────────────────────
+#  Named volumes 
 volumes:
   postgres_data:
   redis_data:
 
-# ── Services ──────────────────────────────────────────────────────────────────
+#  Services 
 services:
 
-  # ── PostgreSQL ───────────────────────────────────────────────────────────────
-  db:
+  #  PostgreSQL   db:
     image: postgres:16-alpine
     container_name: devops_postgres
     restart: always
@@ -36,7 +35,7 @@ services:
     expose:
       - "5432"
 
-  # ── Redis ────────────────────────────────────────────────────────────────────
+  #  Redis 
   redis:
     image: redis:7-alpine
     container_name: devops_redis
@@ -54,7 +53,7 @@ services:
     expose:
       - "6379"
 
-  # ── FastAPI Application ───────────────────────────────────────────────────────
+  # FastAPI Application
   api:
     build:
       context: .
@@ -88,7 +87,7 @@ services:
         max-size: "10m"
         max-file: "5"
 
-  # ── NGINX Reverse Proxy ───────────────────────────────────────────────────────
+  #  NGINX Reverse Proxy 
   nginx:
     image: nginx:1.27-alpine
     container_name: devops_nginx

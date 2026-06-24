@@ -9,7 +9,7 @@ from app.database import engine, Base
 from app.cache import get_redis
 from app.routers import items, health
 
-# ── Logging Setup ──────────────────────────────────────────────────────────────
+#  Logging Setup 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
@@ -18,7 +18,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-# ── Lifespan (startup / shutdown) ─────────────────────────────────────────────
+# Lifespan (startup / shutdown)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Starting up — creating database tables...")
@@ -30,7 +30,7 @@ async def lifespan(app: FastAPI):
     await engine.dispose()
 
 
-# ── App ────────────────────────────────────────────────────────────────────────
+# App 
 app = FastAPI(
     title="DevOps Demo API",
     description="A production-ready FastAPI service with PostgreSQL, Redis, and NGINX.",
@@ -47,7 +47,7 @@ app.add_middleware(
 )
 
 
-# ── Request logging middleware ─────────────────────────────────────────────────
+# Request logging middleware 
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
     start = time.time()
@@ -59,12 +59,12 @@ async def log_requests(request: Request, call_next):
     return response
 
 
-# ── Routers ───────────────────────────────────────────────────────────────────
+#  Routers 
 app.include_router(health.router, tags=["Health"])
 app.include_router(items.router, prefix="/api/v1", tags=["Items"])
 
 
-# ── Root ──────────────────────────────────────────────────────────────────────
+# Root 
 @app.get("/", tags=["Root"])
 async def root():
     return {
