@@ -1,309 +1,57 @@
-# Deployment Checklist & Troubleshooting Guide
+Deployment Notes
+Went through the whole setup end to end, noting down what I checked and how I fixed things when they broke.
+Before starting (local machine)
 
-## Pre-Deployment Checklist
+Made sure Docker Desktop was running, Git was installed, and I had an AWS account ready. Downloaded the .pem key and locked it down with chmod 400.
+Setting up AWS
 
-### Local Machine
-- [ ] Docker Desktop installed and running
-- [ ] Git installed
-- [ ] AWS account created
-- [ ] `.pem` key file downloaded and `chmod 400` applied
+Launched an EC2 instance — Ubuntu 22.04, t3.micro works fine for this. Locked the security group down to just ports 22, 80 and 443. Grabbed an Elastic IP and attached it so the address doesn't change on restart. Tested SSH access before moving on.
+Server side
 
-### AWS Setup
-- [ ] EC2 instance launched (Ubuntu 22.04, t2.micro or larger)
-- [ ] Security Group configured (ports 22, 80, 443 only)
-- [ ] Elastic IP allocated and associated with instance
-- [ ] EC2 instance is reachable via SSH
+Ran the server-setup.sh script. Had to log out and back in for the Docker group permissions to actually kick in — easy to forget this step. After that, docker --version worked fine without sudo. Checked UFW was active with the right rules, and fail2ban was running too.
+Getting the app running
 
-### Server Setup
-- [ ] `server-setup.sh` run successfully
-- [ ] Logged out and back in (for Docker group membership)
-- [ ] `docker --version` works without sudo
-- [ ] UFW status shows active with correct rules
-- [ ] fail2ban status shows active
+Cloned the repo into ~/devops-project, then copied .env.example to .env and filled in the real values. Used strong passwords everywhere (16+ characters, mixed). For SECRET_KEY I generated a 64-character random hex string. Ran the SSL script (bash scripts/generate-ssl.sh) to get certs in place.
+Then docker compose up -d — came up clean with no errors. docker compose ps showed all 4 containers healthy. Hit the health endpoint and got back {"status":"healthy"}, same thing worked over HTTPS too.
+CI/CD
 
-### Application Setup
-- [ ] Repository cloned to `~/devops-project`
-- [ ] `.env` created from `.env.example` with real values
-- [ ] All passwords are strong (16+ chars, mixed characters)
-- [ ] `SECRET_KEY` is a 64-char random hex string
-- [ ] SSL certificates generated (`bash scripts/generate-ssl.sh`)
-- [ ] `docker compose up -d` completed without errors
-- [ ] `docker compose ps` shows all 4 containers as healthy
-- [ ] `curl http://localhost/health` returns `{"status":"healthy",...}`
-- [ ] `curl https://localhost/health -k` returns same response
+Added all 8 secrets in GitHub. Pushed a test commit to main to trigger the pipeline — both the Test and Deploy jobs came back green. Double-checked the deployment actually worked by hitting the health endpoint again after the run.
+Backups
 
-### CI/CD Setup
-- [ ] All 8 GitHub Secrets added
-- [ ] Test push to main triggered the workflow
-- [ ] Both jobs (Test and Deploy) showed green ✓
-- [ ] Deployment verified via health endpoint after CI/CD run
+Ran the backup script manually first to make sure it worked — file showed up in ~/backups/postgres/ as expected. Then set up the cron job and confirmed it with crontab -l.
 
-### Backup Setup
-- [ ] `scripts/backup.sh` runs without error manually
-- [ ] Backup file appears in `~/backups/postgres/`
-- [ ] Cron job set (`crontab -l` shows the backup entry)
-
----
-
-## Common Issues & Fixes
-
-### Container won't start
-
-**Symptom:** `docker compose ps` shows container as `Exit 1` or `Restarting`
-
-```bash
-# Check the logs
-docker compose logs api
-docker compose logs db
-docker compose logs nginx
-docker compose logs redis
-```
-
-Common causes:
-- Wrong password in `.env` → fix `.env`, run `docker compose up -d`
-- Port already in use → `sudo lsof -i :80` to find what's using it
-- Missing SSL certs → run `bash scripts/generate-ssl.sh`
-
----
-
-### 502 Bad Gateway from NGINX
-
-**Symptom:** Browser shows 502 error
-
-Means NGINX is running but can't reach FastAPI.
-
-```bash
-# Check if API is healthy
-docker compose ps api
-
-# Check API logs
-docker compose logs api
-
-# Check if API is listening
-docker compose exec nginx curl http://api:8000/health/live
-```
-
-Common causes:
-- API container still starting up (wait 30s after `docker compose up`)
-- API crashed due to DB connection error (check DB is healthy first)
-- `depends_on` health check not yet passed
-
----
-
-### Database connection error
-
-**Symptom:** API logs show `asyncpg.exceptions.InvalidPasswordError` or `Connection refused`
-
-```bash
-# Check DB is running
-docker compose ps db
-
-# Check DB health specifically
-docker compose exec db pg_isready -U $POSTGRES_USER
-
-# Check credentials match between .env and what DB was created with
-docker compose exec db psql -U $POSTGRES_USER -d $POSTGRES_DB -c "SELECT 1"
-```
-
-If you changed `.env` passwords after first run, the DB was already created with the old password. Fix:
-```bash
-docker compose down -v   # WARNING: deletes all data
+Issues I ran into and how I fixed them
+Container wouldn't start — First thing I do is check logs (docker compose logs api, etc). Usually it's one of: wrong password in .env, a port already taken (check with sudo lsof -i :80), or missing SSL certs.
+502 Bad Gateway — This means NGINX is fine but can't talk to the API. Usually the API just needs a few more seconds to boot, or it crashed because the DB wasn't ready yet. Check the API container's health and logs first.
+Database wouldn't connect — Happened once after I changed the password in .env post-setup — the DB was still using the old one. Had to wipe and recreate:
+docker compose down -v
 docker compose up -d
-```
-
----
-
-### Redis authentication error
-
-**Symptom:** API logs show `WRONGPASS invalid username-password pair`
-
-```bash
-# Test Redis connection manually
-docker compose exec redis redis-cli -a $REDIS_PASSWORD ping
-# Should return: PONG
-```
-
-Check that `REDIS_PASSWORD` in `.env` matches what Redis was started with. If changed after first run:
-```bash
+(Heads up — this nukes existing data, so be careful with it on a real environment.)
+Redis auth failing — Same idea, password mismatch between .env and what Redis actually started with. Fixed with:
 docker compose restart redis
 docker compose restart api
-```
+SSL errors — Just check the certs folder actually has files in it, regenerate if not, and restart nginx.
+GitHub Actions deploy failing — A few usual suspects: SSH refusing (wrong EC2_HOST or port 22 not open), permission denied (fix ownership with sudo chown -R ubuntu:ubuntu ~/devops-project), or the health check failing after deploy (SSH in and check the API logs directly).
+Disk filling up — df -h to see how bad it is, then docker system prune -a clears out old images and containers that aren't being used.
 
----
-
-### SSL certificate errors
-
-**Symptom:** NGINX won't start, logs show `cannot load certificate`
-
-```bash
-# Check certs exist
-ls -la nginx/ssl/
-
-# Regenerate if missing
-bash scripts/generate-ssl.sh
-
-# Restart NGINX
-docker compose restart nginx
-```
-
----
-
-### GitHub Actions deployment fails
-
-**Symptom:** Deploy job shows red ✗
-
-```bash
-# Check which step failed in the GitHub Actions log
-# Common issues:
-
-# 1. SSH connection refused
-# → Check EC2_HOST secret is correct Elastic IP
-# → Check port 22 is open in Security Group
-# → Check EC2_SSH_KEY is the full .pem content including header/footer
-
-# 2. Permission denied
-# → ubuntu user must own ~/devops-project
-# → Run: sudo chown -R ubuntu:ubuntu ~/devops-project
-
-# 3. Health check failed after deploy
-# → SSH into server and check: docker compose logs api
-```
-
----
-
-### Disk space full
-
-**Symptom:** `No space left on device` errors
-
-```bash
-# Check disk usage
-df -h
-
-# Docker cleanup
-docker system prune -a    # removes unused images, containers, networks
-docker volume prune       # WARNING: removes unused volumes (not your named ones)
-
-# Check what's taking space
-du -sh ~/backups/postgres/*
-```
-
----
-
-## Useful Commands Reference
-
-### Daily Operations
-
-```bash
-# Check everything is running
+Commands I use most
 docker compose ps
-
-# View live logs (all services)
 docker compose logs -f
-
-# View logs for one service
-docker compose logs -f api
-docker compose logs -f nginx
-
-# Restart one service
 docker compose restart api
-
-# Full restart
 docker compose down && docker compose up -d
-```
-
-### Health Checks
-
-```bash
-# Full health check
-curl http://localhost/health
-
-# Liveness probe
-curl http://localhost/health/live
-
-# Readiness probe
-curl http://localhost/health/ready
-
-# Test HTTPS (ignore self-signed cert warning)
-curl https://localhost/health -k
-```
-
-### Database Operations
-
-```bash
-# Connect to PostgreSQL
+Health checks
+curl http://52.63.66.236/health
+curl http://52.63.66.236/health/live
+curl http://52.63.66.236/health/ready
+Database
 docker compose exec db psql -U $POSTGRES_USER -d $POSTGRES_DB
-
-# Run a query
-docker compose exec db psql -U $POSTGRES_USER -d $POSTGRES_DB -c "SELECT COUNT(*) FROM items;"
-
-# Manual backup
 bash scripts/backup.sh
-
-# List backups
-ls -lh ~/backups/postgres/
-```
-
-### Redis Operations
-
-```bash
-# Connect to Redis CLI
+Redis
 docker compose exec redis redis-cli -a $REDIS_PASSWORD
 
-# Check memory usage
-docker compose exec redis redis-cli -a $REDIS_PASSWORD info memory
-
-# Flush cache (careful in production)
-docker compose exec redis redis-cli -a $REDIS_PASSWORD FLUSHDB
-```
-
-### Docker Operations
-
-```bash
-# Check resource usage
-docker stats
-
-# Check disk usage
-docker system df
-
-# View all images
-docker images
-
-# Clean up unused images
-docker image prune -f
-
-# Rebuild and restart one service
-docker compose build --no-cache api && docker compose up -d --no-deps api
-```
-
----
-
-## Environment Variables Reference
-
-| Variable | Example Value | Description |
-|---|---|---|
-| `POSTGRES_USER` | `appuser` | PostgreSQL username |
-| `POSTGRES_PASSWORD` | `Str0ng!Pass#2024` | PostgreSQL password (strong) |
-| `POSTGRES_DB` | `appdb` | Database name |
-| `REDIS_PASSWORD` | `R3d!sPa$$w0rd` | Redis auth password |
-| `SECRET_KEY` | `a3f8...` (64 hex chars) | App secret key for signing |
-| `ENVIRONMENT` | `production` | Environment name |
-
-Generate a strong SECRET_KEY:
-```bash
+.env values
+VariableWhat it's forPOSTGRES_USERDB usernamePOSTGRES_PASSWORDDB password (strong)POSTGRES_DBDB nameREDIS_PASSWORDRedis authSECRET_KEY64-char hex, signing key
+Generate the key with:
 python3 -c "import secrets; print(secrets.token_hex(32))"
-```
-
----
-
-## GitHub Secrets Reference
-
-| Secret Name | Where to get it |
-|---|---|
-| `EC2_HOST` | AWS Console → EC2 → Elastic IPs |
-| `EC2_USER` | Always `ubuntu` for Ubuntu instances |
-| `EC2_SSH_KEY` | Contents of your downloaded `.pem` file |
-| `POSTGRES_USER` | Same as your `.env` POSTGRES_USER |
-| `POSTGRES_PASSWORD` | Same as your `.env` POSTGRES_PASSWORD |
-| `POSTGRES_DB` | Same as your `.env` POSTGRES_DB |
-| `REDIS_PASSWORD` | Same as your `.env` REDIS_PASSWORD |
-| `SECRET_KEY` | Same as your `.env` SECRET_KEY |
+GitHub Secrets needed
+SecretWhere fromEC2_HOSTAWS console → Elastic IPsEC2_USERalways "ubuntu"EC2_SSH_KEYfull .pem contentPOSTGRES_USER/PASSWORD/DBsame as .envREDIS_PASSWORDsame as .envSECRET_KEYsame as .env
